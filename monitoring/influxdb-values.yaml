@@ -1,0 +1,7 @@
+adminUser:
+  organization: "minha-empresa"
+  bucket: "k6"
+  user: "admin"
+  password: "adminpassword"
+  # Esse é o mesmo token que salvamos no OpenBao
+  token: "token-secreto-v2-xyz"

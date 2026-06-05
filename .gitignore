@@ -1,0 +1,22 @@
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Editores / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Kubernetes / Helm locais
+kubeconfig
+*.kubeconfig
+charts/
+*.tgz
+
+# Overrides e segredos locais (não versionar credenciais reais)
+*.local.yaml
+*.local.yml
+secrets.env
+.env

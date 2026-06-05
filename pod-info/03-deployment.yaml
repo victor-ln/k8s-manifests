@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-podinfo
+  namespace: prod-apps
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: podinfo
+  template:
+    metadata:
+      labels:
+        app: podinfo
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "app-role"
+        # NOVIDADE: Declarando o consumo do sidecar para o HPA funcionar
+        vault.hashicorp.com/agent-requests-cpu: "25m"
+        vault.hashicorp.com/agent-limits-cpu: "50m"
+        vault.hashicorp.com/agent-init-requests-cpu: "25m"
+        vault.hashicorp.com/agent-init-limits-cpu: "50m"
+        # NOVIDADE: Força o sidecar a ter permissão para dar o killall
+        vault.hashicorp.com/agent-run-as-same-user: "true"
+        vault.hashicorp.com/agent-inject-secret-senha.txt: "secret/data/podinfo"
+        vault.hashicorp.com/agent-inject-template-senha.txt: |
+          {{- with secret "secret/data/podinfo" -}}
+          {{ .Data.data.DATABASE_PASS }}
+          {{- end -}}
+        # NOVIDADE 1: O comando a ser executado quando a senha mudar
+        vault.hashicorp.com/agent-inject-command-senha.txt: "killall podinfo"
+    spec:
+      serviceAccountName: podinfo-sa
+      # NOVIDADE 2: Permite que o sidecar derrube o processo da aplicação
+      shareProcessNamespace: true 
+      containers:
+      - name: backend
+        image: stefanprodan/podinfo:latest
+        # NOVIDADE: Dizendo ao OpenBao com qual usuário o nosso código roda
+        securityContext:
+          runAsUser: 1000
+        ports:
+        - containerPort: 9898
+        # NOVIDADE: A trava de segurança de máquina
+        resources:
+          requests:
+            cpu: "100m"      # Precisa de 10% de 1 CPU para nascer
+            memory: "32Mi"   # Precisa de 32MB de RAM para nascer
+          limits:
+            cpu: "250m"      # Não pode passar de 25% de 1 CPU
+            memory: "64Mi"   # Se tentar usar 65MB de RAM, o K8s mata o Pod
+        env:
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: podinfo-config
+              key: APP_LOG_LEVEL
+        # livenessProbe:
+        #   httpGet:
+        #     path: /healthz
+        #     port: 9898
+        #   initialDelaySeconds: 5  # Espera 5s no boot antes de testar
+        #   periodSeconds: 5        # Testa a cada 5s
+        #   failureThreshold: 3     # Se falhar 3x seguidas (15s), mata o pod
+        # # Sonda de Prontidão
+        # readinessProbe:
+        #   httpGet:
+        #     path: /readyz
+        #     port: 9898
+        #   initialDelaySeconds: 2
+        #   periodSeconds: 5
+        #   failureThreshold: 1     # Se falhar 1x, já tira do balanceador

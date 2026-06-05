@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # generateName: cada execução cria um Job novo (k6-load-test-xxxxx), então dá
+  # para rodar de novo sem apagar o anterior. Exige `kubectl create` (não `apply`).
+  generateName: k6-load-test-
+  namespace: prod-apps
+  labels:
+    app: k6-load-test
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/agent-pre-populate-only: "true"
+        vault.hashicorp.com/role: "app-role"
+        # Garante que o arquivo de senha será criado com permissão para o usuário do k6 ler
+        vault.hashicorp.com/agent-run-as-same-user: "true"
+        vault.hashicorp.com/agent-inject-secret-influx-token: "secret/data/monitoramento"
+        vault.hashicorp.com/agent-inject-template-influx-token: |
+          {{- with secret "secret/data/monitoramento" -}}
+          export K6_INFLUXDB_TOKEN="{{ .Data.data.INFLUX_TOKEN }}"
+          {{- end -}}
+    spec:
+      serviceAccountName: podinfo-sa
+      restartPolicy: Never
+      containers:
+      - name: k6
+        image: grafana/k6:latest
+        # Dizendo que o k6 não roda como root
+        securityContext:
+          runAsUser: 12345
+        command: ["/bin/sh", "-c"]
+        # CORREÇÃO: Usando '.' em vez de 'source' (Padrão POSIX do Alpine Linux)
+        args: 
+        - >
+          . /vault/secrets/influx-token && 
+          k6 run --out influxdb=http://k6:${K6_INFLUXDB_TOKEN}@influxdb-influxdb2.monitoring.svc.cluster.local:80/k6 /test/spike.js
+        volumeMounts:
+        - name: k6-script-volume
+          mountPath: /test
+      volumes:
+      - name: k6-script-volume
+        configMap:
+          name: k6-script
