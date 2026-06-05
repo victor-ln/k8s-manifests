@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: podinfo-ingress
+  namespace: prod-apps
+spec:
+  # Diz ao K8s que o Traefik é o dono desta regra
+  ingressClassName: traefik
+  rules:
+  - host: podinfo.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: servico-podinfo
+            port:
+              number: 9898

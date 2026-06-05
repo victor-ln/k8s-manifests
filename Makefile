@@ -2,11 +2,22 @@ NAMESPACE ?= prod-apps
 
 all: cluster-up
 
+setup-up-all: ingress-up bao-up bao-setup pod-info-app-up monitoring-up metrics-server-up monitoring-setup
+
 cluster-up:
-	kind create cluster
+	kind create cluster --config kind-config.yaml
 
 cluster-down:
 	kind delete cluster
+
+ingress-up:
+	helm repo add traefik https://traefik.github.io/charts
+	helm repo update
+	# Usamos hostPort=80 para que o Traefik se conecte diretamente à porta mapeada pelo Kind
+	helm install traefik traefik/traefik \
+	  --namespace traefik-system --create-namespace \
+	  --set ports.web.hostPort=80 \
+	  --set ports.websecure.hostPort=443
 
 pod-info-app-up:
 	kubectl apply -f pod-info/
@@ -71,7 +82,7 @@ monitoring-up: monitoring-install
 
 # Cria no InfluxDB o usuário v1 que o k6 usa para gravar; a senha vem do OpenBao.
 # Rode depois de 'monitoring-up' e 'bao-setup' (depende do segredo no OpenBao).
-monitoring-setup:
+monitoring-setup: grafana-dashboard-config
 	bash monitoring/setup.sh
 
 # (Re)cria o ConfigMap com o JSON do dashboard que o Grafana provisiona via volume
