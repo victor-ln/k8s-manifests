@@ -14,7 +14,8 @@ As peças têm dependências de ordem rígidas; suba nesta sequência:
 make cluster-up            # kind create cluster
 make metrics-server-up     # OBRIGATÓRIO antes do HPA calcular utilização de CPU
 make bao-up                # helm install do OpenBao (modo dev) no namespace `security`
-make bao-setup             # bootstrap do OpenBao: semeia segredos, habilita auth k8s, escreve policy/role
+make db-up                 # PostgreSQL (StatefulSet + PVC) no namespace `database` — o cofre precisa dele vivo
+make bao-setup             # bootstrap do OpenBao: semeia segredos KV, configura o Database Engine, auth k8s, policy/role
 make pod-info-app-up       # kubectl apply -f pod-info/ — a app depende do injector + role do OpenBao
 make monitoring-up         # InfluxDB v2 + Grafana (provisiona o dashboard do k6) no `monitoring`
 make monitoring-setup      # cria o usuário v1 do InfluxDB que o output do k6 precisa (senha lida do OpenBao)
@@ -32,6 +33,8 @@ Documentação humana por tópicos em `README.md` e `docs/` (roadmap, troublesho
 
 **Fluxo de segredos (OpenBao → pods).** O `openbao/setup.sh` é a fonte da verdade: semeia `secret/podinfo` (`DATABASE_PASS`) e `secret/monitoramento` (`INFLUX_TOKEN`), habilita o auth do Kubernetes e amarra a role `app-role` à ServiceAccount `podinfo-sa` no namespace `prod-apps`. Tudo que precisa de segredo deve (a) rodar como `podinfo-sa` e (b) carregar anotações `vault.hashicorp.com/...` para o sidecar injetor buscar. Tanto `pod-info/03-deployment.yaml` quanto `tests/k6/01-job.yaml` fazem exatamente isso.
 
+**Credenciais dinâmicas do banco (Database Engine).** Além do motor `kv`, o `setup.sh` liga o motor `database`: dá ao OpenBao o `root` do PostgreSQL (`postgres`/`root123`) e cria a role `app-role` que **gera usuários efêmeros sob demanda** (`v-root-app-role-…`, `default_ttl=1h`/`max_ttl=24h`). O `pod-info/03-deployment.yaml` **não usa mais** o KV `secret/podinfo`: suas anotações apontam para `database/creds/app-role` e o template injeta `DB_USER`/`DB_PASS` em `/vault/secrets/db-creds.env` (a `app-policy` precisa de `read` nessa rota). **Ordem importa:** `db-up` antes de `bao-setup` — a config `database/config/meubanco` valida a `connection_url` contra um banco vivo. O `secret/podinfo` (`DATABASE_PASS`) segue semeado, mas hoje é legado/PoC (a app migrou para credenciais dinâmicas). `root123` ainda em texto plano no manifesto do Postgres é dívida conhecida (candidato a *root rotation* pelo OpenBao).
+
 **Caminho de escrita k6 → InfluxDB (o não-óbvio).** O `--out influxdb=` embutido no k6 fala o **protocolo InfluxDB v1** e autentica por basic-auth `k6:<senha>` da URL. O InfluxDB 2.x resolve esse basic-auth contra um **mapeamento "v1 auth" usuário/senha** (`influx v1 auth ...`), *não* contra API tokens — então, sem esse mapeamento, toda escrita é rejeitada com `401 Unauthorized` (o roteamento DBRP `k6`→bucket já é virtual/automático). O `monitoring/setup.sh` (rodado por `make monitoring-setup`) cria/sincroniza esse usuário v1; a senha é **lida do OpenBao** (`secret/monitoramento` → `INFLUX_TOKEN`) — o mesmo segredo que o Job do k6 injeta — então o OpenBao continua sendo a fonte única da credencial de escrita. Re-rodar re-sincroniza a senha se ela rotacionar.
 
 **O token do InfluxDB ainda vive hardcoded em dois pontos de leitura/bootstrap:** `monitoring/influxdb-values.yaml` (`adminUser.token`, onboarding do InfluxDB) e `monitoring/grafana-values.yaml` (`secureJsonData.token`, token de leitura do Grafana). São consumidos pelo Helm no momento do install e precisam bater com o `INFLUX_TOKEN` semeado no `openbao/setup.sh`. O caminho de *escrita* do k6 não duplica mais o segredo (deriva do OpenBao); esses dois continuam sendo um acoplamento conhecido (candidato a External Secrets Operator).
@@ -42,7 +45,7 @@ Documentação humana por tópicos em `README.md` e `docs/` (roadmap, troublesho
 
 **O HPA depende das declarações de CPU do injector.** O `api-podinfo-hpa` mira 50% de utilização de CPU, mas o Pod também roda um sidecar do Vault Agent. O deployment declara os requests/limits de CPU do sidecar via anotações `vault.hashicorp.com/agent-*-cpu` para a conta de porcentagem do HPA fechar. Sem o metrics-server, o HPA lê `<unknown>` e nunca escala.
 
-**Reload na rotação de segredo.** O deployment define `shareProcessNamespace: true` mais `agent-inject-command-senha.txt: "killall podinfo"` e `agent-run-as-same-user: "true"`, de modo que, quando o segredo injetado muda, o sidecar mata o processo da app (mesmo UID 1000) para forçar um reload.
+**Reload na rotação de credencial.** O deployment define `shareProcessNamespace: true` mais `agent-inject-command-db-creds.env: "killall podinfo"` e `agent-run-as-same-user: "true"`, de modo que, quando a credencial **rotaciona** (o lease bate no `max_ttl`), o sidecar mata o processo da app (mesmo UID 1000) para forçar o reload. Enquanto o lease só **renova** (abaixo do `max_ttl`), o arquivo não muda e não há restart. Mudar a config da role no OpenBao **não** afeta Pods vivos — eles só conhecem o lease que já têm; use `kubectl rollout restart deployment/api-podinfo -n prod-apps` para forçar a política nova (estado servidor × cliente; ver `docs/conceitos-e-padroes.md`).
 
 **O OpenBao roda em modo dev** (`server.dev.enabled: true`) — em memória, auto-unseal, auth por root-token. O estado se perde no restart do pod, e por isso o `bao-setup` re-semeia tudo e precisa ser re-rodado após qualquer recriação do pod do OpenBao.
 
@@ -50,7 +53,10 @@ Documentação humana por tópicos em `README.md` e `docs/` (roadmap, troublesho
 
 - `Makefile` — o orquestrador; comece por aqui.
 - `pod-info/` — a app de demo (numerada `01`–`07`); aplicada como diretório.
-- `openbao/` — `values.yaml` do Helm + script `setup.sh` de bootstrap.
+- `database/` — PostgreSQL (StatefulSet + PVC) no namespace `database`; primeira peça stateful.
+- `openbao/` — `values.yaml` do Helm + script `setup.sh` de bootstrap (KV + Database Engine).
 - `monitoring/` — values do Helm para InfluxDB v2 e Grafana + JSON do dashboard do k6.
 - `tests/k6/` — script de carga `spike.js` (rampa 0→200 VUs em 3 min, bate no Service `servico-podinfo` interno) e runner `01-job.yaml`.
+- `tests/db/` — `test-pvc.sh`: teste de caos da persistência do PVC (`make test-db-pvc`).
+- `tests/bao/` — `test-rotation.sh`/`watch-rotation.sh` (revogação/rotação; encurtam o TTL e restauram via `trap`) + `lib.sh` compartilhado (`make test-bao-rotation`, `make watch-bao-rotation`).
 - `docs/` — documentação humana por tópicos (roadmap, troubleshooting, conceitos-e-padroes).

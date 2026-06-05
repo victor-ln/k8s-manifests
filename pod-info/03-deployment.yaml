@@ -22,13 +22,19 @@ spec:
         vault.hashicorp.com/agent-init-limits-cpu: "50m"
         # NOVIDADE: Força o sidecar a ter permissão para dar o killall
         vault.hashicorp.com/agent-run-as-same-user: "true"
-        vault.hashicorp.com/agent-inject-secret-senha.txt: "secret/data/podinfo"
-        vault.hashicorp.com/agent-inject-template-senha.txt: |
-          {{- with secret "secret/data/podinfo" -}}
-          {{ .Data.data.DATABASE_PASS }}
+
+        # 1. Dizemos de ONDE o sidecar deve buscar a credencial (a nova rota do banco)
+        vault.hashicorp.com/agent-inject-secret-db-creds.env: "database/creds/app-role"
+
+        # 2. Formatamos a saída como variáveis de ambiente para a aplicação ler
+        vault.hashicorp.com/agent-inject-template-db-creds.env: |
+          {{- with secret "database/creds/app-role" -}}
+          export DB_USER="{{ .Data.username }}"
+          export DB_PASS="{{ .Data.password }}"
           {{- end -}}
-        # NOVIDADE 1: O comando a ser executado quando a senha mudar
-        vault.hashicorp.com/agent-inject-command-senha.txt: "killall podinfo"
+
+        # 3. Quando a senha expirar (em 1h) e o cofre gerar uma nova, reiniciamos a API para ela ler a nova
+        vault.hashicorp.com/agent-inject-command-db-creds.env: "killall podinfo"
     spec:
       serviceAccountName: podinfo-sa
       # NOVIDADE 2: Permite que o sidecar derrube o processo da aplicação

@@ -2,7 +2,7 @@ NAMESPACE ?= prod-apps
 
 all: cluster-up
 
-setup-up-all: db-up ingress-up bao-up bao-setup pod-info-app-up monitoring-up metrics-server-up monitoring-setup
+setup-up-all: ingress-up db-up bao-up bao-setup pod-info-app-up monitoring-up metrics-server-up monitoring-setup
 
 cluster-up:
 	kind create cluster --config kind-config.yaml
@@ -12,6 +12,11 @@ cluster-down:
 
 db-up:
 	kubectl apply -f database/
+	# Aguarda o banco nascer para evitar falhas no script do OpenBao
+	kubectl rollout status statefulset/postgres -n database --timeout=120s
+
+test-db-pvc:
+	bash tests/db/test-pvc.sh
 
 ingress-up:
 	helm repo add traefik https://traefik.github.io/charts
@@ -42,6 +47,12 @@ bao-setup:
 bao-install:
 	helm repo add openbao https://openbao.github.io/openbao-helm
 	helm repo update
+
+test-bao-rotation:
+	bash tests/bao/test-rotation.sh
+
+watch-bao-rotation:
+	bash tests/bao/watch-rotation.sh
 
 k6-config:
 	kubectl create configmap k6-script --from-file=tests/k6/spike.js -n prod-apps --dry-run=client -o yaml | kubectl apply -f -

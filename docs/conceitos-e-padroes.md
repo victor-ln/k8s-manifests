@@ -54,6 +54,24 @@ Gerenciador de pacotes do K8s (o "apt/npm" da infra). Empacota dezenas de manife
 ## Identidade: ServiceAccount + Role
 A `ServiceAccount` é o "RG" do Pod. A role do OpenBao amarra a entrega do segredo a uma SA específica num namespace específico.
 
+## Segredos estáticos (KV) × dinâmicos (Database Engine)
+- **Motor `kv`:** guarda uma **string fixa** (ex.: `DATABASE_PASS`). Útil, mas se vazar, vale até alguém trocar à mão.
+- **Motor `database`:** o OpenBao recebe o `root` do banco e **gera um usuário efêmero sob demanda** (`v-root-app-role-…`) a cada pedido, com SQL definido na `role` (`creation_statements`) e validade (TTL). A app nunca vê o `root`; cada Pod ganha sua própria credencial descartável. É o pulo do **Zero-Trust**: não existe senha permanente para roubar.
+
+## Lease: renovação × rotação × revogação
+Credencial dinâmica vem com um **lease** (contrato de aluguel) com `default_ttl` (vida inicial) e `max_ttl` (teto absoluto). O sidecar `vault-agent` é o "advogado" da app e age aos **2/3 do TTL**:
+- **Renovação:** ainda abaixo do `max_ttl` → estende o `VALID UNTIL` do **mesmo** usuário. Arquivo/senha não mudam, **sem restart, sem downtime**.
+- **Rotação:** bateu no `max_ttl` → o cofre recusa renovar; o agente pega um usuário **novo**, reescreve `/vault/secrets/…` e dispara o `killall` (a app reinicia e lê a credencial virgem). O banco dropa a antiga.
+- **Revogação:** o Pod morre → o lease deixa de ser renovado → ao expirar, o OpenBao faz `DROP ROLE`. Senha vazada vira inútil sozinha.
+
+## Estado do servidor × estado do cliente
+Por que mudar uma config no OpenBao **não** afeta Pods já rodando? O `vault-agent` não faz *polling* da configuração — ele só conhece o **lease "no bolso"** que recebeu no boot. Alterar a `role` no servidor (ex.: encurtar o `max_ttl`) só vale para **contratos novos**. Por isso, para aplicar política nova **agora**, faz-se `kubectl rollout restart` (Pods novos nascem sem contrato e pegam a regra atual); os antigos só a adotariam ao renovar/expirar. O `killall` automatiza o **ciclo de vida da credencial**; o `rollout restart` é a operação manual para **propagar nova política**.
+
+## Segurança de rede × segurança de identidade (Zero-Trust)
+São duas camadas independentes — uma não substitui a outra:
+- **Rede (firewall interno):** por padrão o K8s tem **rede plana** — qualquer Pod alcança qualquer outro pelo DNS (`postgres-svc.database…`). Restringe-se com **`NetworkPolicy`** ("só Pods com label `app: x` no namespace `y` falam na porta 5432"). *Atenção:* a CNI padrão do kind **não aplica** NetworkPolicy — precisa de Calico/Cilium. Ainda não implementado no lab (candidato a próximo passo).
+- **Identidade (credencial):** mesmo que a rede deixe passar, sem senha estática o invasor não entra — só existem credenciais efêmeras que expiram (Database Engine, acima). Defesa em profundidade: bloquear o pacote **e** invalidar a chave.
+
 ## Probes
 - **Liveness:** travou? → mata e recria.
 - **Readiness:** pronto para tráfego? → isola do Service sem matar.
