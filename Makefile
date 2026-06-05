@@ -2,13 +2,16 @@ NAMESPACE ?= prod-apps
 
 all: cluster-up
 
-setup-up-all: ingress-up bao-up bao-setup pod-info-app-up monitoring-up metrics-server-up monitoring-setup
+setup-up-all: db-up ingress-up bao-up bao-setup pod-info-app-up monitoring-up metrics-server-up monitoring-setup
 
 cluster-up:
 	kind create cluster --config kind-config.yaml
 
 cluster-down:
 	kind delete cluster
+
+db-up:
+	kubectl apply -f database/
 
 ingress-up:
 	helm repo add traefik https://traefik.github.io/charts

@@ -5,6 +5,24 @@ Referência rápida dos conceitos-chave exercitados no lab.
 ## Estado declarativo & reconciliação
 Você declara o **estado desejado** (YAML); o cluster trabalha em loop para que a realidade bata. Não se dá ordens passo a passo. `kubectl apply` calcula o diff.
 
+## Control Loop & Self-healing (auto-cura)
+Consequência prática da reconciliação acima. O **Controller Manager** roda um loop infinito comparando, a cada instante, o **estado real** com o **estado desejado** gravado no etcd. Ao detectar divergência, dispara um evento de reconciliação — e **não se importa com a causa** (você deletou? o nó pegou fogo? faltou memória?). A única missão é fazer o real voltar a bater com o desejado.
+- **Demonstração no lab:** deletando o `postgres-0` à mão, o cluster vê `réplicas: 0 ≠ 1 desejada` e **ressuscita o Pod automaticamente**, sem ninguém de plantão. É o que torna a infra resiliente a falhas.
+- **A diferença do estado:** num Deployment, o Pod renasce com nome aleatório e **disco vazio**. Num StatefulSet, renasce com **a mesma identidade e o mesmo disco** — por isso os dados sobrevivem (ver abaixo).
+
+## StatefulSet (workloads com estado)
+Para apps **stateful** (bancos, filas, sistemas de consenso) onde identidade e disco importam. Contraste com o Deployment:
+- **Deployment:** Pods são *gado descartável* — nome aleatório (`api-8f7b9v`), intercambiáveis, disco efêmero. Recriou → nasce vazio. Bom para apps **stateless** (a API web do lab).
+- **StatefulSet:** Pods têm **identidade estável e ordenada** (`postgres-0`, `postgres-1`, …). O K8s recria o Pod com **o mesmo nome** e repluga **o mesmo PVC**. Exige um `serviceName` (Service governante) para ancorar o DNS da camada de dados.
+- **Regra mental:** o Pod continua descartável e auto-curável, mas o **disco é sagrado** — o dado é desacoplado do contêiner e sobrevive à sua morte. No lab: o `postgres-0` ressuscitou após `kubectl delete pod` com a tabela e o registro intactos.
+
+## Volumes: PV, PVC & StorageClass
+Desacopla o ciclo de vida do **dado** do ciclo de vida do **Pod**.
+- **PVC (PersistentVolumeClaim):** o *pedido* de disco que o Pod faz ("quero 1Gi, `ReadWriteOnce`"). É o que vive no manifesto (`database/02-pvc.yaml`).
+- **PV (PersistentVolume):** o disco *real* que satisfaz o claim. No kind, o **provisionador padrão** cria sob demanda (uma pasta no HD do host); na nuvem seria um EBS/Persistent Disk.
+- **`accessModes: ReadWriteOnce`:** o volume só monta num nó por vez (típico de armazenamento de bloco).
+- **`mountPath`:** onde o disco aparece dentro do contêiner (ex.: `/var/lib/postgresql/data`). Pod morre, PV fica; o próximo Pod remonta o mesmo PV — a base da persistência.
+
 ## Control Plane vs. Worker Nodes
 - **Control Plane (cérebro):** API Server (porta de entrada), etcd (fonte da verdade), Controller Manager (reconcilia), Scheduler (escolhe o nó). Na nuvem (EKS/GKE/AKS) é gerenciado e oculto.
 - **Worker Nodes:** VMs/máquinas onde os Pods rodam. Na nuvem, são instâncias na sua conta (provisionadas via Terraform).

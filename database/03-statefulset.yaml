@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: database
+spec:
+  serviceName: "postgres-svc" # Requisito do StatefulSet
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        # Senha root provisória (logo o OpenBao assumirá isso)
+        - name: POSTGRES_PASSWORD
+          value: "root123"
+        - name: POSTGRES_DB
+          value: "meubanco"
+        # Aqui conectamos a pasta interna do Postgres ao disco físico
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+      # Aqui dizemos que o 'postgres-storage' é o PVC que criámos no arquivo anterior
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-data-pvc
