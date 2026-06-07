@@ -4,7 +4,7 @@ Este arquivo orienta o Claude Code (claude.ai/code) ao trabalhar com o código d
 
 ## Visão geral
 
-Manifestos Kubernetes + values do Helm para um cluster local `kind`, orquestrados inteiramente pelo `Makefile`. Sobe a app de demonstração `stefanprodan/podinfo` atrás de um HPA, busca segredos do OpenBao (fork open-source do Vault) via Vault Agent injector, e faz teste de carga com k6 transmitindo métricas para InfluxDB + Grafana. Não há código de aplicação aqui — apenas infraestrutura declarativa. Comentários e saídas dos alvos estão em português (`prod-apps` = namespace de teste; `NOVIDADE` = adição nova).
+Manifestos Kubernetes + values do Helm para um cluster local `kind`, orquestrados pelo `Makefile` (provisionamento) + `tests/Makefile` (execução dos testes; o raiz só encaminha os alvos test-*/k6-*). Sobe a app de demonstração `stefanprodan/podinfo` atrás de um HPA, busca segredos do OpenBao (fork open-source do Vault) via Vault Agent injector, e faz teste de carga com k6 transmitindo métricas para InfluxDB + Grafana. Não há código de aplicação aqui — apenas infraestrutura declarativa. Comentários e saídas dos alvos estão em português (`prod-apps` = namespace de teste; `NOVIDADE` = adição nova).
 
 ## Workflow (a ordem de subida importa)
 
@@ -29,6 +29,8 @@ Documentação humana por tópicos em `README.md` e `docs/` (roadmap, troublesho
 
 `make bao-up` e `make monitoring-up` instalam os charts do Helm diretamente (sem alvo idempotente de upgrade) — re-rodar sobre um release existente falha; use `helm upgrade` manualmente ou desinstale antes.
 
+**Provisionamento × testes.** Os alvos de provisionamento (cluster, helm installs, setups) vivem no `Makefile` raiz; os de teste vivem em `tests/Makefile` e o raiz apenas os encaminha. Ao adicionar um alvo novo, coloque-o no arquivo certo e, se for de teste, inclua o nome na linha `.PHONY` de encaminhamento do raiz (senão `make <alvo>` da raiz não o acha). Variáveis de linha de comando (ex.: `NAMESPACE=`, `ESPERA=`) propagam ao sub-make automaticamente.
+
 ## Arquitetura & acoplamentos não-óbvios
 
 **Fluxo de segredos (OpenBao → pods).** O `openbao/setup.sh` é a fonte da verdade: semeia `secret/podinfo` (`DATABASE_PASS`) e `secret/monitoramento` (`INFLUX_TOKEN`), habilita o auth do Kubernetes e amarra a role `app-role` à ServiceAccount `podinfo-sa` no namespace `prod-apps`. Tudo que precisa de segredo deve (a) rodar como `podinfo-sa` e (b) carregar anotações `vault.hashicorp.com/...` para o sidecar injetor buscar. Tanto `pod-info/03-deployment.yaml` quanto `tests/k6/01-job.yaml` fazem exatamente isso.
@@ -51,7 +53,8 @@ Documentação humana por tópicos em `README.md` e `docs/` (roadmap, troublesho
 
 ## Layout
 
-- `Makefile` — o orquestrador; comece por aqui.
+- `Makefile` — o orquestrador de **provisionamento**; comece por aqui.
+- `tests/Makefile` — a **execução dos testes** (test-db-pvc, test/watch-bao-rotation, k6-config, run/clean-k6-tests). O Makefile raiz só encaminha esses alvos (`$(MAKE) -C tests $@`), então `make run-k6-tests` etc. seguem funcionando da raiz; rodar `make -C tests <alvo>` também funciona.
 - `pod-info/` — a app de demo (numerada `01`–`07`); aplicada como diretório.
 - `database/` — PostgreSQL (StatefulSet + PVC) no namespace `database`; primeira peça stateful.
 - `openbao/` — `values.yaml` do Helm + script `setup.sh` de bootstrap (KV + Database Engine).

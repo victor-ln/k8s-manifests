@@ -1,23 +1,36 @@
 NAMESPACE ?= prod-apps
 
+# =============================================================================
+# Orquestrador do laboratório. O PROVISIONAMENTO mora aqui; a EXECUÇÃO dos
+# testes foi separada para tests/Makefile (encaminhada pelos alvos test-* /
+# k6-* no fim deste arquivo). Ordem de subida: ver CLAUDE.md / README.md.
+# =============================================================================
+
 all: cluster-up
 
+# Sobe a stack inteira na ordem de dependência.
 setup-up-all: ingress-up db-up bao-up bao-setup pod-info-app-up monitoring-up metrics-server-up monitoring-setup
 
+# -----------------------------------------------------------------------------
+# Cluster (kind)
+# -----------------------------------------------------------------------------
 cluster-up:
 	kind create cluster --config kind-config.yaml
 
 cluster-down:
 	kind delete cluster
 
+# -----------------------------------------------------------------------------
+# Banco de dados (PostgreSQL — StatefulSet + PVC no namespace database)
+# -----------------------------------------------------------------------------
 db-up:
 	kubectl apply -f database/
 	# Aguarda o banco nascer para evitar falhas no script do OpenBao
 	kubectl rollout status statefulset/postgres -n database --timeout=120s
 
-test-db-pvc:
-	bash tests/db/test-pvc.sh
-
+# -----------------------------------------------------------------------------
+# Ingress (Traefik)
+# -----------------------------------------------------------------------------
 ingress-up:
 	helm repo add traefik https://traefik.github.io/charts
 	helm repo update
@@ -27,11 +40,12 @@ ingress-up:
 	  --set ports.web.hostPort=80 \
 	  --set ports.websecure.hostPort=443
 
-pod-info-app-up:
-	kubectl apply -f pod-info/
-
-pod-info-app-down:
-	kubectl delete -f pod-info/
+# -----------------------------------------------------------------------------
+# OpenBao (cofre — modo dev no namespace security)
+# -----------------------------------------------------------------------------
+bao-install:
+	helm repo add openbao https://openbao.github.io/openbao-helm
+	helm repo update
 
 bao-up: bao-install
 	helm install bao openbao/openbao \
@@ -44,37 +58,18 @@ bao-setup:
 	# Rollout status aguarda a criação real do recurso sem falhar prematuramente
 	kubectl rollout status deployment/bao-openbao-agent-injector -n security --timeout=120s
 
-bao-install:
-	helm repo add openbao https://openbao.github.io/openbao-helm
-	helm repo update
+# -----------------------------------------------------------------------------
+# Aplicação de demonstração (podinfo)
+# -----------------------------------------------------------------------------
+pod-info-app-up:
+	kubectl apply -f pod-info/
 
-test-bao-rotation:
-	bash tests/bao/test-rotation.sh
+pod-info-app-down:
+	kubectl delete -f pod-info/
 
-watch-bao-rotation:
-	bash tests/bao/watch-rotation.sh
-
-k6-config:
-	kubectl create configmap k6-script --from-file=tests/k6/spike.js -n prod-apps --dry-run=client -o yaml | kubectl apply -f -
-
-watch-pod-info:
-	watch kubectl get pods -n prod-apps
-
-list-pods:
-	kubectl get pods -n $(NAMESPACE)
-
-top-pods:
-	kubectl get pods -n $(NAMESPACE)
-
-hpa-pods:
-	kubectl get hpa -n $(NAMESPACE)
-
-top-hpa-pods:
-	kubectl get pods,hpa -n $(NAMESPACE)
-
-watch-all:
-	watch kubectl get pods,hpa,jobs -n $(NAMESPACE)
-
+# -----------------------------------------------------------------------------
+# Monitoramento (InfluxDB v2 + Grafana no namespace monitoring)
+# -----------------------------------------------------------------------------
 monitoring-install:
 	helm repo add influxdata https://helm.influxdata.com/
 	helm repo add grafana https://grafana.github.io/helm-charts
@@ -109,15 +104,9 @@ monitoring-forward-grafana:
 	# Abre a porta do Grafana para você acessar no navegador (localhost:3000)
 	kubectl port-forward svc/grafana 3000:80 -n monitoring
 
-run-k6-tests:
-	# O Job usa generateName, então cada run cria um Job novo (k6-load-test-xxxxx).
-	# Por isso usamos 'create' (não 'apply', que exige nome fixo).
-	kubectl create -f tests/k6/01-job.yaml
-
-# Remove todas as execuções de carga (Jobs e pods) do k6
-clean-k6-tests:
-	kubectl delete jobs -l app=k6-load-test -n prod-apps
-
+# -----------------------------------------------------------------------------
+# Metrics Server (OBRIGATÓRIO antes do HPA calcular utilização de CPU)
+# -----------------------------------------------------------------------------
 metrics-server-install:
 	helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
 	helm repo update
@@ -126,3 +115,33 @@ metrics-server-up: metrics-server-install
 	helm install metrics-server metrics-server/metrics-server \
 	  -n kube-system \
 	  --set args={--kubelet-insecure-tls}
+
+# -----------------------------------------------------------------------------
+# Observação / atalhos de inspeção
+# -----------------------------------------------------------------------------
+watch-pod-info:
+	watch kubectl get pods -n prod-apps
+
+list-pods:
+	kubectl get pods -n $(NAMESPACE)
+
+top-pods:
+	kubectl get pods -n $(NAMESPACE)
+
+hpa-pods:
+	kubectl get hpa -n $(NAMESPACE)
+
+top-hpa-pods:
+	kubectl get pods,hpa -n $(NAMESPACE)
+
+watch-all:
+	watch kubectl get pods,hpa,jobs -n $(NAMESPACE)
+
+# -----------------------------------------------------------------------------
+# Testes — encaminhados para tests/Makefile (mantém os comandos documentados).
+# Variáveis de linha de comando (ex.: NAMESPACE=foo, ESPERA=90) propagam ao
+# sub-make automaticamente.
+# -----------------------------------------------------------------------------
+.PHONY: test test-db-pvc test-bao-rotation watch-bao-rotation k6-config run-k6-tests clean-k6-tests
+test test-db-pvc test-bao-rotation watch-bao-rotation k6-config run-k6-tests clean-k6-tests:
+	$(MAKE) -C tests $@
