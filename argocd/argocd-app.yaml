@@ -1,0 +1,28 @@
+# -----------------------------------------------------------------------------
+# ESPELHO SANEADO do Application configurado pela UI do ArgoCD.
+#
+#   • NÃO aplicar via kubectl — o bootstrap é pela UI (ver docs/gitops-argocd.md).
+#     Este arquivo é documentação/governança versionada do que você preencheu lá.
+#   • SEM credencial: o acesso ao repo privado vem do "Connect Repo" da UI
+#     (Secret no namespace argocd), nunca embutido na repoURL.
+# -----------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-app
+  namespace: argocd # o controlador do ArgoCD gerencia a partir daqui
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/victor-ln/gitops-manifests.git
+    targetRevision: HEAD
+    path: argocd-app # overlay kustomize da API FastAPI
+  destination:
+    server: https://kubernetes.default.svc # o próprio cluster local
+    namespace: argocd-app
+  syncPolicy:
+    automated:
+      prune: true # apagou no Git → apaga no cluster
+      selfHeal: true # mexeu no cluster à mão → o ArgoCD desfaz
+    syncOptions:
+      - CreateNamespace=true

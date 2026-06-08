@@ -8,8 +8,10 @@ NAMESPACE ?= prod-apps
 
 all: cluster-up
 
-# Sobe a stack inteira na ordem de dependência.
-setup-up-all: ingress-up db-up bao-up bao-setup pod-info-app-up monitoring-up metrics-server-up monitoring-setup
+# Sobe a stack de INFRA na ordem de dependência. As APLICAÇÕES (argocd-app e
+# podinfo) sobem pelo ArgoCD a partir do repo gitops-manifests — ver
+# docs/gitops-argocd.md (bootstrap pela UI). Por isso não há mais pod-info-app-up aqui.
+setup-up-all: ingress-up argocd-install db-up bao-up bao-setup monitoring-up metrics-server-up monitoring-setup
 
 # -----------------------------------------------------------------------------
 # Cluster (kind)
@@ -40,6 +42,21 @@ ingress-up:
 	  --set ports.web.hostPort=80 \
 	  --set ports.websecure.hostPort=443
 
+argocd-install:
+	kubectl create namespace argocd || true
+	kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+	# Aguarda os pods principais do ArgoCD subirem
+	kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=120s
+
+argocd-pass:
+	# O ArgoCD gera uma senha inicial aleatória. Este comando extrai essa senha do cofre interno do K8s
+	@echo "A senha do usuário 'admin' é:"
+	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo ""
+
+argocd-forward:
+	# Libera o acesso à interface visual do ArgoCD
+	kubectl port-forward svc/argocd-server -n argocd 8080:443
+
 # -----------------------------------------------------------------------------
 # OpenBao (cofre — modo dev no namespace security)
 # -----------------------------------------------------------------------------
@@ -59,13 +76,10 @@ bao-setup:
 	kubectl rollout status deployment/bao-openbao-agent-injector -n security --timeout=120s
 
 # -----------------------------------------------------------------------------
-# Aplicação de demonstração (podinfo)
+# Aplicações (podinfo + argocd-app): NÃO sobem por make. Quem as gerencia é o
+# ArgoCD, a partir do repo gitops-manifests (bootstrap pela UI). Ver
+# docs/gitops-argocd.md. Os manifestos antigos de pod-info/ migraram para lá.
 # -----------------------------------------------------------------------------
-pod-info-app-up:
-	kubectl apply -f pod-info/
-
-pod-info-app-down:
-	kubectl delete -f pod-info/
 
 # -----------------------------------------------------------------------------
 # Monitoramento (InfluxDB v2 + Grafana no namespace monitoring)

@@ -1,0 +1,34 @@
+# -----------------------------------------------------------------------------
+# ESPELHO SANEADO do Application configurado pela UI do ArgoCD.
+#
+#   • NÃO aplicar via kubectl — o bootstrap é pela UI (ver docs/gitops-argocd.md).
+#   • SEM credencial: acesso ao repo privado vem do "Connect Repo" da UI
+#     (Secret no namespace argocd). (Houve um PAT em texto plano aqui — revogado.)
+# -----------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: podinfo-gitops
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/victor-ln/gitops-manifests.git
+    targetRevision: HEAD
+    path: podinfo # overlay kustomize do podinfo (demo do OpenBao)
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: prod-apps # a role do OpenBao está amarrada a este namespace
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+  # O HPA é o dono de /spec/replicas — sem isto o selfHeal brigaria com o HPA.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: api-podinfo
+      jsonPointers:
+        - /spec/replicas

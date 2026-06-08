@@ -127,3 +127,37 @@ Matamos a senha estática: em vez do motor `kv` (string fixa), ligamos o **Datab
   - `make test-db-pvc` → `tests/db/test-pvc.sh`: insere uma sentinela, deleta o `postgres-0`, espera o self-healing e **falha se o dado não voltar** (assertion real).
   - `make test-bao-rotation` → `tests/bao/test-rotation.sh`: **encurta o TTL** (30s/1m), reinicia a API, mata o Pod e checa que **aquele usuário exato** sumiu do `pg_roles`. `make watch-bao-rotation` faz o mesmo encurtamento e espia o arquivo em loop para ver a rotação ao vivo em ~1min. Ambos **restauram o TTL canônico (1h/24h) na saída** (via `trap`) — com o padrão você esperaria 1h/24h para ver o efeito. A definição da role mora num único lugar (`tests/bao/lib.sh`, espelhando o `setup.sh`).
 - **Pendência de segurança:** `root123` ainda existe (texto plano), agora só como admin do cofre. Evoluções: rotacionar a própria senha root via OpenBao (*root rotation*) e fechar a **camada de rede** (ver `NetworkPolicy` em [conceitos](./conceitos-e-padroes.md) — hoje a rede é plana e qualquer Pod alcança o banco pelo DNS).
+
+## 15. GitOps com ArgoCD (pull-based, 3 repos)
+
+Saímos do deploy **push** (`make`/`kubectl apply`) para **pull**: o ArgoCD roda no cluster,
+observa um repo Git e reconcilia o cluster com ele — o Git vira a fonte da verdade. Detalhe
+e passo a passo em [gitops-argocd.md](./gitops-argocd.md).
+
+- **3 repos, 2 planos:** `argocd-app` (source: código + Dockerfile + CI) → `gitops-manifests`
+  (kustomize, o que o ArgoCD lê) ← `k8s-manifests` (infra + os `Application`). Os
+  **manifestos** são o workload; o **`Application`** é o ponteiro de controle (governança) —
+  por isso ele mora no repo de infra, não no do app (senão o CI do app mudaria a própria política).
+- **Pipeline:** commit convencional → semantic-release cria `vX.Y.Z` → build/push
+  `vlimanu/argocd-app:X.Y.Z` → CI dá `kustomize edit set image` no `gitops-manifests` → ArgoCD
+  sincroniza. **Workflow único** (jobs por `needs`) evita o PAT que serviria só para "uma
+  action disparar a outra".
+- **Infra preservada por construção:** `prune` só apaga o que o ArgoCD criou (label de
+  tracking); a infra do Makefile não tem esse label → intocada.
+- **HPA × `selfHeal`:** o Deployment não declara `replicas` (HPA é o dono) + `ignoreDifferences`
+  no Application — senão o `selfHeal` brigaria com o HPA num loop.
+- **Versão pela tag:** `--build-arg APP_VERSION` → `ENV` → pydantic-settings → rota `/version`.
+  O `.env` fica fora da imagem (`.dockerignore`); a versão vem 100% do build-arg.
+
+## 16. Estratégia de CD: roll-forward × revert × rollback
+
+Como reagir a um bug em produção sob GitOps. Doc dedicado:
+[estrategia-cd-rollback.md](./estrategia-cd-rollback.md).
+
+- **Roll-forward** (padrão): commit do fix → novo release → sync. História linear.
+- **`git revert`** (rollback GitOps-correto): novo commit que inverte o ruim; Git segue
+  fonte da verdade. Reverter a *tag de imagem* volta a versão na hora (imagem já no registry).
+- **ArgoCD Rollback** (UI/CLI): volta o cluster a uma revisão anterior **sem mexer no Git** →
+  **desabilita o auto-sync** (senão re-sincronizaria pro HEAD ruim). Alavanca de emergência;
+  depois reconciliar via `git revert` + reabilitar o auto-sync.
+- **Tags imutáveis** (`:X.Y.Z`, não `:latest`) são o que torna revert/rollback instantâneos.
