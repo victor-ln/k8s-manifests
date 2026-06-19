@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: poc
+  namespace: argocd
+spec:
+  description: POC multi-cluster dev/prod para validar o fluxo CI/CD GitOps.
+  sourceRepos:
+    - "*"
+  destinations:
+    - namespace: poc
+      server: https://kubernetes.default.svc
+    - namespace: poc
+      name: poc-dev
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: external-secrets.io
+      kind: ExternalSecret
+  orphanedResources:
+    warn: true
